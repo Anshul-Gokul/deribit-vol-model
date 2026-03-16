@@ -1,0 +1,70 @@
+# Default configuration for the options-implied probability engine
+
+data:
+  # Deribit API base URLs
+  mainnet_url: "https://www.deribit.com/api/v2"
+  testnet_url: "https://test.deribit.com/api/v2"
+  use_testnet: false
+  # Request settings
+  max_retries: 3
+  retry_delay_seconds: 1.0
+  request_timeout_seconds: 30
+  # Rate limiting
+  requests_per_second: 10
+
+cleaning:
+  # Minimum bid price to accept (in underlying units)
+  min_bid: 0.0001
+  # Maximum bid-ask spread as fraction of mid
+  max_spread_pct: 0.50
+  # Minimum open interest to consider
+  min_open_interest: 0
+  # Minimum volume to consider (0 = accept all)
+  min_volume: 0
+  # Use OTM options only for surface fitting
+  otm_only: true
+  # Minimum days to expiry
+  min_dte: 0.01
+  # Maximum days to expiry
+  max_dte: 365
+
+surface:
+  # Method: "spline" or "svi"
+  method: "spline"
+  # Spline settings
+  spline_smoothing: 0.01
+  # SVI parameters
+  svi_initial_guess: [0.04, 0.4, -0.1, 0.1, 0.04]
+  # Strike grid for surface evaluation
+  moneyness_range: [-0.5, 0.5]  # log-moneyness range
+  moneyness_points: 200
+  # Minimum number of valid strikes per expiry to include
+  min_strikes_per_expiry: 5
+
+distribution:
+  # Method: "breeden_litzenberger" or "density_from_smile"
+  method: "breeden_litzenberger"
+  # Strike grid for density extraction
+  num_strike_points: 500
+  # Finite difference step as fraction of forward price
+  fd_step_pct: 0.002
+  # Density smoothing
+  smooth_density: true
+  smoothing_window: 5
+  # Tail handling
+  extrapolate_tails: true
+  tail_decay: "lognormal"  # "lognormal" or "flat"
+
+pricing:
+  # Risk-free rate assumption (annualized)
+  risk_free_rate: 0.05
+  # Digital spread width for spread approximation
+  digital_spread_pct: 0.005
+
+backtest:
+  # Default horizons
+  horizons: ["1h", "4h", "1d", "1w"]
+  # Number of calibration bins
+  calibration_bins: 10
+  # Minimum observations per bin
+  min_obs_per_bin: 5
