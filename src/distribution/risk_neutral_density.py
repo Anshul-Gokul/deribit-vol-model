@@ -192,9 +192,15 @@ def extract_density_breeden_litzenberger(
     if forward is None:
         forward = surface._interpolate_forward(T)
 
-    # Build strike grid: centered on forward, spanning reasonable range
-    # Use log-space for better coverage of tails
-    log_spread = 1.0  # covers roughly ±2.7x the forward price
+    # Adaptive strike grid: width scales with IV * sqrt(T)
+    # so short-dated tenors get a tight grid, long-dated get wider
+    atm_iv = _safe_atm_iv_for_grid(surface, T, forward)
+    # Number of standard deviations to cover (5 SD covers 99.99%)
+    n_sd = 5.0
+    log_spread = min(n_sd * atm_iv * np.sqrt(T), 1.0)
+    # Ensure minimum spread for very short-dated
+    log_spread = max(log_spread, 0.05)
+
     log_K_min = np.log(forward) - log_spread
     log_K_max = np.log(forward) + log_spread
     log_strikes = np.linspace(log_K_min, log_K_max, n_points)
@@ -203,8 +209,9 @@ def extract_density_breeden_litzenberger(
     # Evaluate call prices on the grid
     call_prices = surface.call_prices_on_grid(strikes, T, forward, r)
 
-    # Finite difference step
-    dK = fd_step_pct * forward
+    # Adaptive finite difference step: scale with the strike grid spacing
+    # Larger step = more smoothing, smaller = more noise
+    dK = max(fd_step_pct * forward, (strikes[-1] - strikes[0]) / n_points * 2)
 
     # Compute second derivative using central differences
     # f(K) = e^(rT) * (C(K+dK) - 2*C(K) + C(K-dK)) / dK^2
@@ -218,9 +225,13 @@ def extract_density_breeden_litzenberger(
         C_down = surface.call_price(K - dK, T, forward, r)
         pdf[i] = discount * (C_up - 2.0 * C_mid + C_down) / (dK**2)
 
-    # Smooth the density
-    if smooth and smooth_window > 1:
-        pdf = uniform_filter1d(pdf, size=smooth_window)
+    # Adaptive smoothing: heavier for longer tenors where spline noise is worse
+    if smooth:
+        # Scale window with tenor: short = light, long = heavy
+        adaptive_window = max(smooth_window, int(5 + 40 * min(T, 1.0)))
+        # Ensure odd for symmetry
+        adaptive_window = adaptive_window | 1
+        pdf = uniform_filter1d(pdf, size=adaptive_window)
 
     # Clip negative values
     n_negative = np.sum(pdf < 0)
@@ -233,10 +244,25 @@ def extract_density_breeden_litzenberger(
     if total > 0:
         pdf = pdf / total
     else:
-        logger.error("Density integrates to zero — check surface fit")
-        # Fallback: lognormal centered at forward
-        sigma = 0.5  # crude default
-        pdf = _lognormal_pdf(strikes, forward, sigma, T)
+        logger.error("Density integrates to zero — falling back to lognormal")
+        pdf = _lognormal_pdf(strikes, forward, atm_iv, T)
+
+    # Validate mean vs forward; if wildly off, blend with lognormal
+    raw_mean = float(trapezoid(strikes * pdf, strikes))
+    mean_error = abs(raw_mean / forward - 1.0)
+    if mean_error > 0.08:
+        logger.warning(
+            f"Density mean ({raw_mean:.0f}) deviates {mean_error:.1%} from forward "
+            f"({forward:.0f}) — blending with lognormal"
+        )
+        lognorm_pdf = _lognormal_pdf(strikes, forward, atm_iv, T)
+        # Blend weight: more lognormal as error grows
+        w = min(mean_error * 3, 0.9)
+        pdf = (1 - w) * pdf + w * lognorm_pdf
+        # Re-normalize
+        total = trapezoid(pdf, strikes)
+        if total > 0:
+            pdf = pdf / total
 
     # Compute CDF by cumulative integration
     cdf = np.zeros_like(strikes)
@@ -261,6 +287,17 @@ def extract_density_breeden_litzenberger(
     density.validate()
 
     return density
+
+
+def _safe_atm_iv_for_grid(surface: IVSurface, T: float, forward: float) -> float:
+    """Get ATM IV for grid sizing, with fallback."""
+    try:
+        iv = surface.iv(forward, T, forward)
+        if 0.01 < iv < 5.0:
+            return iv
+    except Exception:
+        pass
+    return 0.5  # default 50% vol
 
 
 def _lognormal_pdf(K: np.ndarray, F: float, sigma: float, T: float) -> np.ndarray:

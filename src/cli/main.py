@@ -400,6 +400,27 @@ def forward_curve(
 
 
 @app.command()
+def plot_forecast(
+    asset: str = typer.Option("BTC", help="Asset: BTC or ETH"),
+    output_dir: str = typer.Option("reports", help="Output directory for plots"),
+    data_dir: str = typer.Option("data", help="Data directory"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Generate all forecast visualizations (fan chart, forward curve, signals, etc.)."""
+    _setup_logging(verbose)
+    from src.models.spot_forecast import build_forecast
+    from src.utils.forecast_plots import generate_all_forecast_plots
+
+    console.print(f"[bold]Building {asset} forecast and generating plots...[/bold]")
+    fc = build_forecast(asset, data_dir)
+    paths = generate_all_forecast_plots(fc, output_dir)
+
+    for p in paths:
+        console.print(f"  [green]Saved:[/green] {p}")
+    console.print(f"\n[bold green]Done — {len(paths)} plots saved to {output_dir}/[/bold green]")
+
+
+@app.command()
 def signals(
     asset: str = typer.Option("BTC", help="Asset: BTC or ETH"),
     data_dir: str = typer.Option("data", help="Data directory"),
