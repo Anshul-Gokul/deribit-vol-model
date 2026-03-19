@@ -304,5 +304,119 @@ def make_report(
     console.print(f"\n[green]Report saved: {report_path}[/green]")
 
 
+@app.command()
+def spot_forecast(
+    asset: str = typer.Option("BTC", help="Asset: BTC or ETH"),
+    target: str = typer.Option("", help="Target timestamp (ISO format). Default: multi-horizon"),
+    no_tilt: bool = typer.Option(False, help="Disable directional tilt (pure forward only)"),
+    data_dir: str = typer.Option("data", help="Data directory"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Forecast future spot price using derivatives-implied model."""
+    _setup_logging(verbose)
+    from src.models.spot_forecast import build_forecast, forecast_at_timestamp
+
+    if target:
+        # Single timestamp forecast
+        target_dt = datetime.fromisoformat(target.replace("Z", "+00:00"))
+        console.print(f"[bold]Forecasting {asset} at {target_dt.isoformat()}...[/bold]")
+
+        h = forecast_at_timestamp(asset, target_dt, data_dir, apply_tilt=not no_tilt)
+        console.print()
+        console.print(f"[bold]Target:[/bold] {target_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+        console.print(f"[bold]Forward:[/bold]  {h.forward:,.2f}")
+        console.print(f"[bold]Forecast:[/bold] {h.point_forecast:,.2f}  (tilt: {h.tilt_pct:+.3f}%)")
+        console.print(f"[bold]IV:[/bold]       {h.implied_vol:.1%}")
+        console.print(f"[bold]±1 SD:[/bold]    {h.expected_move_pct:+.1f}%  (${h.expected_move_1sd:,.0f})")
+        console.print()
+        console.print("[bold]Confidence Intervals (risk-neutral):[/bold]")
+        console.print(f"   5%: {h.q05:>10,.0f}")
+        console.print(f"  25%: {h.q25:>10,.0f}")
+        console.print(f"  50%: {h.q50:>10,.0f}  (median)")
+        console.print(f"  75%: {h.q75:>10,.0f}")
+        console.print(f"  95%: {h.q95:>10,.0f}")
+    else:
+        # Multi-horizon forecast
+        console.print(f"[bold]Building {asset} spot forecast from derivatives...[/bold]")
+        fc = build_forecast(asset, data_dir, apply_tilt=not no_tilt)
+        console.print(fc.summary())
+        if fc.signals:
+            console.print()
+            console.print(fc.signals.summary())
+
+
+@app.command()
+def forward_curve(
+    asset: str = typer.Option("BTC", help="Asset: BTC or ETH"),
+    data_dir: str = typer.Option("data", help="Data directory"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Display the futures-implied forward curve."""
+    _setup_logging(verbose)
+    from src.models.forward_curve import build_forward_curve_from_futures
+    from src.data.fetch_deribit import get_latest_snapshot, load_snapshot
+
+    now = datetime.now(timezone.utc)
+
+    fut_snap = get_latest_snapshot(asset, "futures", data_dir)
+    if fut_snap is None:
+        console.print(f"[red]No futures snapshot for {asset}. Run fetch-data first.[/red]")
+        raise typer.Exit(1)
+
+    opt_snap = get_latest_snapshot(asset, "options", data_dir)
+    df_fut = load_snapshot(fut_snap)
+
+    # Get spot from options or futures
+    if opt_snap:
+        df_opt = load_snapshot(opt_snap)
+        spot = float(df_opt["index_price"].iloc[0])
+    else:
+        spot = float(df_fut["index_price"].iloc[0]) if "index_price" in df_fut.columns else 0
+
+    curve = build_forward_curve_from_futures(df_fut, spot, now)
+
+    console.print(f"[bold]{asset} Forward Curve[/bold]")
+    console.print(curve.summary())
+    console.print()
+
+    # Full table
+    table = Table(title="Forward Curve Details")
+    table.add_column("Days", justify="right")
+    table.add_column("Forward", justify="right", style="cyan")
+    table.add_column("Basis %", justify="right")
+    table.add_column("Ann. Carry %", justify="right")
+    table.add_column("Impl. Rate %", justify="right")
+
+    df = curve.curve_table()
+    for _, row in df.iterrows():
+        table.add_row(
+            str(row["days"]),
+            f"{row['forward']:,.2f}",
+            f"{row['basis_pct']:+.3f}",
+            f"{row['annualized_carry_pct']:+.2f}",
+            f"{row['implied_rate_pct']:+.2f}",
+        )
+    console.print(table)
+
+
+@app.command()
+def signals(
+    asset: str = typer.Option("BTC", help="Asset: BTC or ETH"),
+    data_dir: str = typer.Option("data", help="Data directory"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Extract derivatives-implied directional and volatility signals."""
+    _setup_logging(verbose)
+    from src.models.spot_forecast import build_forecast
+
+    console.print(f"[bold]Extracting {asset} derivatives signals...[/bold]")
+    fc = build_forecast(asset, data_dir, apply_tilt=False)
+
+    if fc.signals:
+        console.print(fc.signals.summary())
+    else:
+        console.print("[red]Could not extract signals.[/red]")
+
+
 if __name__ == "__main__":
     app()
